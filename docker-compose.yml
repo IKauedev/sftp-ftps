@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  sftp:
+    image: atmoz/sftp
+    container_name: sftp-server
+    ports:
+      - "2222:22"
+    volumes:
+      - ./sftp-data:/home/testuser/upload
+    command: testuser:testpass:::upload
+    restart: unless-stopped
+  ftps:
+    image: quay.io/aminvakil/alpine-ftp-server-tls:latest
+    container_name: ftps-server
+    ports:
+      - "21:21"
+      - "21000-21010:21000-21010"
+    environment:
+      USERS: "testuser|testpass123!"  # formato: usuario|senha
+      ADDRESS: "127.0.0.1"            # IP externo visível pelo cliente
+      MIN_PORT: "21000"
+      MAX_PORT: "21010"
+    volumes:
+      - ./ftps-data:/ftp
+    restart: unless-stopped
