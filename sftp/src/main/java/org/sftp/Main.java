@@ -39,6 +39,20 @@ public class Main {
         boolean ok3 = sftp.moveToLocal(ConfigPaths.REMOTE_LOGS_DIR, ConfigPaths.LOCAL_LOGS_DIR, true);
         System.out.println("Resultado: " + ok3);
 
+        createRecursiveLocalStructure();
+        System.out.println("\n=== Teste Upload Recursivo ===");
+        boolean uploadRecursiveOk = sftp.moveToRemote(ConfigPaths.LOCAL_BASE_DIR, "/upload/recursive_test", true);
+        System.out.println("Upload recursivo OK: " + uploadRecursiveOk);
+
+        String localDownloadRecursive = ConfigPaths.LOCAL_BASE_DIR + "/download_recursive";
+
+        System.out.println("\n=== Teste Download Recursivo ===");
+        boolean downloadRecursiveOk = sftp.moveToLocal("/upload/recursive_test", localDownloadRecursive, true);
+        System.out.println("Download recursivo OK: " + downloadRecursiveOk);
+
+        System.out.println("\nConteúdo baixado:");
+        printDirectoryTree(new File(localDownloadRecursive), "");
+
         System.out.println("\n=== Teste 4: Ignorar operação (isMain = false) ===");
         boolean ok4 = sftp.moveToLocal(ConfigPaths.REMOTE_IGNORE_TEST, ConfigPaths.LOCAL_BASE_DIR, false);
         System.out.println("Resultado: " + ok4);
@@ -129,6 +143,32 @@ public class Main {
             }
         } catch (IOException e) {
             System.err.println("Erro ao criar arquivo " + file.getAbsolutePath() + ": " + e.getMessage());
+        }
+    }
+
+    private static void createRecursiveLocalStructure() {
+        String base = ConfigPaths.LOCAL_BASE_DIR;
+        File subDir1 = new File(base, "subdir1");
+        File subDir2 = new File(subDir1, "subdir2");
+        subDir2.mkdirs();
+
+        createFileWithContent(new File(subDir1, "file_subdir1.txt"), "Conteúdo arquivo em subdir1");
+        createFileWithContent(new File(subDir2, "file_subdir2.txt"), "Conteúdo arquivo em subdir2");
+
+        System.out.println("Estrutura recursiva criada em " + base);
+    }
+
+    private static void printDirectoryTree(File folder, String indent) {
+        if (folder.isDirectory()) {
+            System.out.println(indent + "[DIR] " + folder.getName());
+            File[] files = folder.listFiles();
+            if (files != null) {
+                for (File f : files) {
+                    printDirectoryTree(f, indent + "  ");
+                }
+            }
+        } else {
+            System.out.println(indent + folder.getName());
         }
     }
 }

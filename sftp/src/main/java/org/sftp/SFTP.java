@@ -122,56 +122,54 @@ public class SFTP implements RemoteTransferClient {
                 localTarget = localTarget.getParentFile();
             }
 
-            final boolean[] anySuccess = {false};
-            BiFunction<String, File, Boolean> downloadRecursive = new BiFunction<>() {
-                @Override
-                public Boolean apply(String remoteDir, File localDir) {
-                    try {
-                        if (!localDir.exists() && !localDir.mkdirs()) {
-                            System.err.println("Erro ao criar diretório local: " + localDir.getAbsolutePath());
-                            return false;
-                        }
-
-                        @SuppressWarnings("unchecked")
-                        Vector<ChannelSftp.LsEntry> entries = channelSftp.ls(remoteDir);
-
-                        boolean success = false;
-
-                        for (ChannelSftp.LsEntry entry : entries) {
-                            String name = entry.getFilename();
-                            if (name.equals(".") || name.equals("..")) continue;
-
-                            String remotePath = remoteDir + "/" + name;
-                            File localPath = new File(localDir, name);
-
-                            if (entry.getAttrs().isDir()) {
-                                if (this.apply(remotePath, localPath)) success = true;
-                            } else {
-                                if (pattern.matcher(name).matches()) {
-                                    try (OutputStream os = new FileOutputStream(localPath)) {
-                                        channelSftp.get(remotePath, os);
-                                        System.out.println("Download concluído: " + remotePath + " → " + localPath.getAbsolutePath());
-                                        channelSftp.rm(remotePath);
-                                        success = true;
-                                    } catch (Exception e) {
-                                        System.err.println("Erro ao transferir: " + remotePath + " → " + e.getMessage());
-                                    }
-                                }
-                            }
-                        }
-                        return success;
-                    } catch (Exception e) {
-                        System.err.println("Erro no download recursivo: " + e.getMessage());
-                        return false;
-                    }
-                }
-            };
-
-            anySuccess[0] = downloadRecursive.apply(remoteBaseDir, localTarget);
-            return anySuccess[0];
+            boolean anySuccess = downloadRecursive(remoteBaseDir, localTarget, pattern);
+            return anySuccess;
         } catch (Exception e) {
             System.err.println("Erro geral moveToLocal: " + e.getMessage());
             e.printStackTrace();
+            return false;
+        }
+    }
+
+    private boolean downloadRecursive(String remoteDir, File localDir, Pattern pattern) {
+        try {
+            if (!localDir.exists() && !localDir.mkdirs()) {
+                System.err.println("Erro ao criar diretório local: " + localDir.getAbsolutePath());
+                return false;
+            }
+
+            @SuppressWarnings("unchecked")
+            Vector<ChannelSftp.LsEntry> entries = channelSftp.ls(remoteDir);
+
+            boolean success = false;
+
+            for (ChannelSftp.LsEntry entry : entries) {
+                String name = entry.getFilename();
+                if (name.equals(".") || name.equals("..")) continue;
+
+                String remotePath = remoteDir + "/" + name;
+                File localPath = new File(localDir, name);
+
+                if (entry.getAttrs().isDir()) {
+                    boolean childSuccess = downloadRecursive(remotePath, localPath, pattern);
+                    success = success || childSuccess;
+                } else {
+                    if (pattern.matcher(name).matches()) {
+                        try (OutputStream os = new FileOutputStream(localPath)) {
+                            channelSftp.get(remotePath, os);
+                            System.out.println("Download concluído: " + remotePath + " → " + localPath.getAbsolutePath());
+                            channelSftp.rm(remotePath);
+                            success = true;
+                        } catch (Exception e) {
+                            System.err.println("Erro ao transferir: " + remotePath + " → " + e.getMessage());
+                        }
+                    }
+                }
+            }
+            return success;
+
+        } catch (Exception e) {
+            System.err.println("Erro no download recursivo: " + e.getMessage());
             return false;
         }
     }
@@ -239,53 +237,11 @@ public class SFTP implements RemoteTransferClient {
                 }
             };
 
-            BiFunction<File, String, Boolean> uploadRecursive = new BiFunction<>() {
-                @Override
-                public Boolean apply(File localFile, String remotePath) {
-                    boolean success = false;
-                    try {
-                        if (localFile.isDirectory()) {
-                            try {
-                                channelSftp.cd(remotePath);
-                            } catch (SftpException e) {
-                                try {
-                                    channelSftp.mkdir(remotePath);
-                                    System.out.println("Criado diretório remoto: " + remotePath);
-                                } catch (SftpException ex) {
-                                    System.err.println("Erro criando diretório remoto: " + ex.getMessage());
-                                    return false; // falha ao criar diretório remoto, para evitar loop
-                                }
-                            }
-                            File[] files = localFile.listFiles();
-                            if (files != null) {
-                                for (File f : files) {
-                                    String remoteSubPath = remotePath + "/" + f.getName();
-                                    boolean childSuccess = this.apply(f, remoteSubPath);
-                                    success = success || childSuccess;
-                                }
-                            }
-                        } else {
-                            try (var fis = new java.io.FileInputStream(localFile)) {
-                                channelSftp.put(fis, remotePath);
-                                System.out.println("Upload concluído: " + localFile.getAbsolutePath() + " → " + remotePath);
-                                success = true;
-                            } catch (Exception e) {
-                                System.err.println("Erro no upload do arquivo: " + localFile.getAbsolutePath() + " → " + e.getMessage());
-                            }
-                        }
-                    } catch (Exception e) {
-                        System.err.println("Erro no upload recursivo: " + e.getMessage());
-                    }
-                    return success;
-                }
-            };
-
             boolean anySuccess = false;
-
             if (localSource.isDirectory()) {
                 // Se target é um diretório remoto, remove barras finais para evitar path errado
                 String remoteDir = targetIsDir ? target.replaceAll("/+$", "") : target;
-                anySuccess = uploadRecursive.apply(localSource, remoteDir);
+                anySuccess = uploadRecursive(localSource, remoteDir);
             } else if (source.contains("*")) {
                 // Upload com wildcard local
                 int lastSlash = source.lastIndexOf("/");
@@ -335,6 +291,43 @@ public class SFTP implements RemoteTransferClient {
             e.printStackTrace();
             return false;
         }
+    }
+
+    private boolean uploadRecursive(File localFile, String remotePath) {
+        boolean success = false;
+        try {
+            if (localFile.isDirectory()) {
+                try {
+                    channelSftp.cd(remotePath);
+                } catch (SftpException e) {
+                    try {
+                        channelSftp.mkdir(remotePath);
+                        System.out.println("Criado diretório remoto: " + remotePath);
+                    } catch (SftpException ex) {
+                        System.err.println("Erro criando diretório remoto: " + ex.getMessage());
+                        return false;}
+                }
+                File[] files = localFile.listFiles();
+                if (files != null) {
+                    for (File f : files) {
+                        String remoteSubPath = remotePath + "/" + f.getName();
+                        boolean childSuccess = uploadRecursive(f, remoteSubPath);
+                        success = success || childSuccess;
+                    }
+                }
+            } else {
+                try (var fis = new java.io.FileInputStream(localFile)) {
+                    channelSftp.put(fis, remotePath);
+                    System.out.println("Upload concluído: " + localFile.getAbsolutePath() + " → " + remotePath);
+                    success = true;
+                } catch (Exception e) {
+                    System.err.println("Erro no upload do arquivo: " + localFile.getAbsolutePath() + " → " + e.getMessage());
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Erro no upload recursivo: " + e.getMessage());
+        }
+        return success;
     }
 
     /**
