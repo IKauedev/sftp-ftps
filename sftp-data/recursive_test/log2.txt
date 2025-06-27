@@ -1,0 +1,2 @@
+Outro log linha 1
+Outro log linha 2
