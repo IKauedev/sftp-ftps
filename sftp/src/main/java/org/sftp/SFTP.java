@@ -7,7 +7,6 @@ import java.io.FileOutputStream;
 import java.io.OutputStream;
 import java.util.Properties;
 import java.util.Vector;
-import java.util.function.BiFunction;
 import java.util.regex.Pattern;
 
 public class SFTP implements RemoteTransferClient {
@@ -27,6 +26,10 @@ public class SFTP implements RemoteTransferClient {
         this.password = password;
     }
 
+    /**
+     * Conexão com o servidor SFTP
+     * @return
+     */
     public boolean connect() {
         if (isConnected) return true;
 
@@ -57,6 +60,9 @@ public class SFTP implements RemoteTransferClient {
         }
     }
 
+    /**
+     * Fechamento de conexão com servidor SFTP
+     */
     public void disconnect() {
         if (channelSftp != null && channelSftp.isConnected()) {
             channelSftp.disconnect();
@@ -95,23 +101,14 @@ public class SFTP implements RemoteTransferClient {
             source = normalizePath(source);
             target = normalizePath(target);
 
-            boolean hasWildcard = source.contains("*");
+            boolean hasWildcard = source.contains("*") || source.contains("?") || source.contains("$") || source.contains("_");
             String remoteBaseDir;
             Pattern pattern;
 
-            if (hasWildcard) {
-                int lastSlash = source.lastIndexOf("/");
-                remoteBaseDir = (lastSlash >= 0) ? source.substring(0, lastSlash) : ".";
-                String filePattern = source.substring(lastSlash + 1)
-                        .replace(".", "\\.")
-                        .replace("*", ".*");
-                pattern = Pattern.compile(filePattern);
-            } else {
-                int lastSlash = source.lastIndexOf("/");
-                remoteBaseDir = (lastSlash >= 0) ? source.substring(0, lastSlash) : ".";
-                String fileName = source.substring(lastSlash + 1);
-                pattern = Pattern.compile(Pattern.quote(fileName));
-            }
+            int lastSlash = source.lastIndexOf("/");
+            remoteBaseDir = (lastSlash >= 0) ? source.substring(0, lastSlash) : ".";
+            String fileName = source.substring(lastSlash + 1);
+            pattern = hasWildcard ? wildcardToRegex(fileName) : Pattern.compile(Pattern.quote(fileName));
 
             File localTarget = new File(target);
             if (!localTarget.exists() && !localTarget.mkdirs()) {
@@ -131,6 +128,13 @@ public class SFTP implements RemoteTransferClient {
         }
     }
 
+    /**
+     * Donwload de diretorio de arquivos de forma recursiva
+     * @param remoteDir
+     * @param localDir
+     * @param pattern
+     * @return
+     */
     private boolean downloadRecursive(String remoteDir, File localDir, Pattern pattern) {
         try {
             if (!localDir.exists() && !localDir.mkdirs()) {
@@ -212,30 +216,7 @@ public class SFTP implements RemoteTransferClient {
 
             // Função para garantir que o diretório remoto exista
             String finalTarget = target;
-            Runnable ensureRemoteDirectories = () -> {
-                try {
-                    String[] folders = finalTarget.split("/");
-                    String currentPath = "";
-                    for (String folder : folders) {
-                        if (folder.isEmpty()) continue;
-                        currentPath += "/" + folder;
-                        try {
-                            channelSftp.cd(currentPath);
-                        } catch (SftpException e) {
-                            try {
-                                channelSftp.mkdir(currentPath);
-                                System.out.println("Criado diretório remoto: " + currentPath);
-                            } catch (SftpException ex) {
-                                System.err.println("Erro ao criar diretório remoto " + currentPath + ": " + ex.getMessage());
-                                throw ex; // interrompe criação de diretórios
-                            }
-                        }
-                    }
-                } catch (Exception e) {
-                    System.err.println("Erro criando diretórios remotos: " + e.getMessage());
-                    throw new RuntimeException(e);
-                }
-            };
+            ensureRemoteDirectories(finalTarget);
 
             boolean anySuccess = false;
             if (localSource.isDirectory()) {
@@ -257,7 +238,7 @@ public class SFTP implements RemoteTransferClient {
                     return false;
                 }
 
-                ensureRemoteDirectories.run();
+                ensureRemoteDirectories(target);
 
                 File[] files = localDir.listFiles((dir, name) -> pattern.matcher(name).matches());
                 if (files != null) {
@@ -273,7 +254,7 @@ public class SFTP implements RemoteTransferClient {
                     }
                 }
             } else {
-                ensureRemoteDirectories.run();
+                ensureRemoteDirectories(target);
                 String remoteFilePath = targetIsDir ? target + localSource.getName() : target;
                 try (var fis = new java.io.FileInputStream(localSource)) {
                     channelSftp.put(fis, remoteFilePath);
@@ -293,6 +274,12 @@ public class SFTP implements RemoteTransferClient {
         }
     }
 
+    /**
+     * Upload de arquivos de um diretorio de forma recursvia
+     * @param localFile
+     * @param remotePath
+     * @return
+     */
     private boolean uploadRecursive(File localFile, String remotePath) {
         boolean success = false;
         try {
@@ -331,6 +318,101 @@ public class SFTP implements RemoteTransferClient {
     }
 
     /**
+     * Move arquivos ou diretórios dentro do servidor SFTP,
+     * podendo usar wildcard (ex.: "/origem/EXTRACAO_PORTOBANK_*.txt").
+     *
+     * @param source Caminho remoto origem
+     * @param target Caminho remoto destino
+     * @param isMain Flag para permitir (true) ou ignorar (false) a operação.
+     * @return true se ao menos um arquivo foi movido; false caso contrário.
+     */
+    public boolean moveRemoteToRemote(String source, String target, boolean isMain) {
+        if (!isMain) {
+            System.out.println("Operação ignorada: isMain = false");
+            return false;
+        }
+
+        try {
+            if (!connect()) {
+                System.err.println("Falha ao conectar.");
+                return false;
+            }
+
+            source = normalizePath(source);
+            target = normalizePath(target);
+
+            boolean hasWildcard = source.contains("*");
+            String remoteBaseDir;
+            Pattern pattern;
+
+            if (hasWildcard) {
+                int lastSlash = source.lastIndexOf("/");
+                remoteBaseDir = (lastSlash >= 0) ? source.substring(0, lastSlash) : ".";
+                String filePattern = source.substring(lastSlash + 1);
+                pattern = wildcardToRegex(filePattern);
+            } else {
+                int lastSlash = source.lastIndexOf("/");
+                remoteBaseDir = (lastSlash >= 0) ? source.substring(0, lastSlash) : ".";
+                String fileName = source.substring(lastSlash + 1);
+                pattern = Pattern.compile(Pattern.quote(fileName));
+            }
+
+            ensureRemoteDirectories(target);
+
+            @SuppressWarnings("unchecked")
+            Vector<ChannelSftp.LsEntry> entries = channelSftp.ls(remoteBaseDir);
+            boolean anyMoved = false;
+
+            for (ChannelSftp.LsEntry entry : entries) {
+                String name = entry.getFilename();
+                if (name.equals(".") || name.equals("..")) continue;
+
+                if (entry.getAttrs().isDir()) continue; // ignorar pastas, ou implemente recursão se quiser mover diretórios inteiros
+
+                if (pattern.matcher(name).matches()) {
+                    String sourcePath = remoteBaseDir + "/" + name;
+                    String targetPath = target.endsWith("/") ? target + name : target;
+
+                    channelSftp.rename(sourcePath, targetPath);
+                    System.out.println("Arquivo movido no SFTP: " + sourcePath + " → " + targetPath);
+                    anyMoved = true;
+                }
+            }
+
+            return anyMoved;
+
+        } catch (Exception e) {
+            System.err.println("Erro moveRemoteToRemote: " + e.getMessage());
+            e.printStackTrace();
+            return false;
+        }
+    }
+
+    /**
+     * Verifica se o diretorio informado existe e caso ele não existe efetua a criação do diretorio
+     * @param remotePath
+     */
+    public void ensureRemoteDirectories(String remotePath) {
+        try {
+            String[] folders = remotePath.split("/");
+            String currentPath = "";
+            for (String folder : folders) {
+                if (folder.isEmpty()) continue;
+                currentPath += "/" + folder;
+                try {
+                    channelSftp.cd(currentPath);
+                } catch (SftpException e) {
+                    channelSftp.mkdir(currentPath);
+                    System.out.println("Criado diretório remoto: " + currentPath);
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Erro criando diretórios remotos: " + e.getMessage());
+            throw new RuntimeException(e);
+        }
+    }
+
+    /**
      * Normaliza um caminho trocando '\' por '/' e removendo barras extras.
      *
      * @param path Caminho a ser normalizado.
@@ -338,6 +420,21 @@ public class SFTP implements RemoteTransferClient {
      */
     private String normalizePath(String path) {
         return path.replace("\\", "/").replaceAll("/+", "/").trim();
+    }
+
+    /**
+     * Cria um pattern wildcard para um arquivo informado
+     * @param wildcard
+     * @return
+     */
+    private Pattern wildcardToRegex(String wildcard) {
+        String regex = wildcard
+                .replace(".", "\\.")
+                .replace("*", ".*")
+                .replace("?", ".")
+                .replace("$", "\\$")
+                .replace("_", "_");
+        return Pattern.compile(regex);
     }
 
     /**
